@@ -1,36 +1,44 @@
-import json
-
-from flask import Blueprint
-from flask import jsonify
-from flask_jwt_extended import current_user
-from flask_jwt_extended import jwt_required
-
-from src.static import DATA_FILE_PATH
-from src.utils.misc import capitalize_name
+from flask import Blueprint, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from src.firestore import get_collection
+from src.cache import redis_client, cache
 
 user_bp = Blueprint("user_bp", __name__)
 
-
-@user_bp.route("/id")
+@user_bp.route('/id', methods=['GET'])
 @jwt_required()
 def get_user_id():
-    with open(DATA_FILE_PATH, encoding="utf-8", mode="r") as data_file:
-        data = json.load(data_file)
+    print("Getting user ID...")
 
-        try:
-            return f"Your id is : {data['users'].index(current_user['username'])}", 200
-        except ValueError:
-            return jsonify(
-                {
-                    "name": "Bad Request",
-                    "msg": "This username is already used.",
-                    "solution": "Try again.",
-                    "status_code": 400,
-                }
-            )
+    try:
+        # Get the username from the JWT identity
+        username = get_jwt_identity()
 
+        # Check if user ID is cached in Redis
+        cached_user_id = redis_client.get(f"user:{username}:id")
+        if cached_user_id:
+            # User ID found in Redis cache
+            print("User ID found in cache")
+            return jsonify({"id": cached_user_id.decode('utf-8')}), 200
 
-@user_bp.route("/hello")
-@jwt_required()
-def get_hello():
-    return f"Hello {capitalize_name(current_user['username'])}"
+        # If not cached, fetch from Firestore
+        print("User ID not found in cache, querying Firestore...")
+        users_ref = get_collection("users")
+        user_query = users_ref.where("username", "==", username).limit(1).stream()
+
+        user_data = None
+        for user in user_query:
+            user_data = user.to_dict()
+
+        if user_data:
+            user_id = user_data.get("id")
+
+            redis_client.setex(f"user:{username}:id", 3600, user_id)
+
+            return jsonify({"id": user_id}), 200
+        else:
+            return jsonify({"message": "User not found"}), 404
+
+    except Exception as e:
+        print(f"Error retrieving user ID: {e}")
+        return jsonify({"message": "Error retrieving user ID"}), 500

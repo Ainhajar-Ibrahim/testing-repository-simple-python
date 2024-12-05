@@ -3,25 +3,33 @@ from typing import Dict
 
 from flask import jsonify
 from flask_jwt_extended import JWTManager
+from src.firestore import get_collection
 
 from src.static import DATA_FILE_PATH
 
 
 def register_jwt_handlers(jwt: JWTManager):
-    @jwt.user_lookup_loader  # type: ignore
+    @jwt.user_lookup_loader  
     def user_lookup_loader(
         _jwt_header: Dict[str, str], jwt_data: Dict[str, Dict[str, str]]
     ):
-        identity = jwt_data["sub"]
-        with open(DATA_FILE_PATH, encoding="utf-8", mode="r") as data_file:
-            try:
-                data = json.load(data_file)
-            except json.decoder.JSONDecodeError:
-                return None
+        try:
+            username = jwt_data["sub"]
 
-            if data["users"][identity["id"]] != identity["username"]:
-                return None
-        return identity
+            users_ref = get_collection("users")
+            user_query = users_ref.where("username", "==", username).limit(1).stream()
+
+            user_data = None
+            for user in user_query:
+                user_data = user.to_dict()
+
+            if user_data:
+                return user_data  
+            else:
+                raise Exception("User not found in database.")
+        except Exception as e:
+            print(f"Error looking up user: {e}")
+            return None
 
     @jwt.expired_token_loader
     def expired_token_loader(di, di2):  # pragma: no cover
